@@ -1,0 +1,110 @@
+# lon2mqtt example configuration
+# Copy to config.yaml and adapt. All addresses and IDs below are placeholders.
+
+mqtt:
+  broker: "192.0.2.10"            # MQTT broker host
+  port: 1883
+  username: "mqtt_user"           # omit for anonymous brokers
+  password: "change_me"
+  # tls: false
+  # client_id: "lon2mqtt"
+  base_topic: "lon2mqtt"          # state: <base>/<entity>/state, command: <base>/<entity>/set
+  discovery_prefix: "homeassistant"
+
+lonworks:
+  serial_port: "/dev/ttyUSB0"     # U61-firmware interface (e.g. U10 FT rev B)
+  baudrate: 460800
+  domain_id: "0a"                 # hex, 0/1/3/6 bytes, as installed on your network
+  source_subnet: 1                # address this bridge uses on the bus; must be unused
+  source_node: 127
+  timeout: 1.5                    # seconds per attempt
+  retries: 3
+
+# Physical nodes and their logical entities.
+#
+# neuron_id : full 48-bit Neuron ID (12 hex digits, usually starting with 01/02/03...)
+# subnet/node: optional; discovered automatically from the first response
+#
+# Entity keys:
+#   id               unique id (MQTT topics, Home Assistant object_id)
+#   name             friendly name
+#   type             light | switch | binary_sensor | sensor | number
+#   snvt_type        SNVT_switch, SNVT_lux, SNVT_temp_p, SNVT_temp, SNVT_lev_percent,
+#                    SNVT_lev_cont, SNVT_count, SNVT_power, SNVT_elec_kwh, SNVT_press_p,
+#                    SNVT_speed, SNVT_occupancy, raw
+#   nv_in            NV index the bridge WRITES (network variable input on the node)
+#   nv_out           NV index the bridge READS (feedback / output). If omitted, nv_in is read.
+#   polling_interval seconds between reads (0 = read once at start-up and after writes)
+#   Optional: dimmable (light), field: value|state (SNVT_switch sensors), invert (binary),
+#             unit, device_class, icon, min/max/step (number)
+#
+# NV indexes can be listed with:  python3 lon2mqtt.py -c config.yaml scan <node>
+
+nodes:
+  - id: "lighting_module_1"
+    name: "Lighting module 1"
+    neuron_id: "021234567890"
+    entities:
+      - id: "dining_light"
+        name: "Dining room light"
+        type: light
+        snvt_type: SNVT_switch        # 2 bytes: value (0-100 %) + state (on/off)
+        nv_in: 51
+        nv_out: 29
+        polling_interval: 15
+
+      - id: "living_light"
+        name: "Living room light"
+        type: light
+        snvt_type: SNVT_switch
+        nv_in: 52
+        nv_out: 30
+        polling_interval: 15
+
+      - id: "hallway_motion"
+        name: "Hallway motion"
+        type: binary_sensor
+        snvt_type: SNVT_switch        # state byte -> ON/OFF
+        device_class: motion
+        nv_out: 26
+        polling_interval: 5
+
+  - id: "weather_station"
+    name: "Weather station"
+    neuron_id: "02abcdef0123"
+    entities:
+      - id: "outdoor_illuminance"
+        name: "Outdoor illuminance"
+        type: sensor
+        snvt_type: SNVT_lux
+        nv_out: 19
+        polling_interval: 60
+
+      - id: "light_sensor_threshold"
+        name: "Light sensor threshold"
+        type: number
+        snvt_type: SNVT_lux
+        nv_in: 28
+        min: 0
+        max: 2000
+        step: 10
+        polling_interval: 0
+
+  - id: "garden_module"
+    name: "Garden module"
+    neuron_id: "02fedcba9876"
+    entities:
+      - id: "garden_light"
+        name: "Garden light"
+        type: switch                  # on/off only: writes 100 %/on or 0 %/off
+        snvt_type: SNVT_switch
+        nv_in: 32
+        polling_interval: 30
+
+      - id: "entrance_light_sensor"
+        name: "Entrance light sensor"
+        type: binary_sensor
+        snvt_type: SNVT_switch
+        device_class: light
+        nv_out: 7
+        polling_interval: 30
