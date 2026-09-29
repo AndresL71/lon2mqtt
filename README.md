@@ -7,6 +7,8 @@ It talks directly to an EnOcean/Echelon USB network interface running **MIP/U61 
 daemon, no LON network interface and no LNS/OpenLNS license are needed. It works inside an
 unprivileged LXC container or a Raspberry Pi as long as `/dev/ttyUSB0` is available.
 
+Thanks to SylvainPastor for pointing out critical changes that made this possible (https://github.com/SylvainPastor/lon-stack-dx)
+
 > Status: early. Tested with a U10 FT rev B on an FT-10 network. Use at your own risk: the
 > bridge sends real network-management and NV update messages to your devices.
 
