@@ -57,7 +57,7 @@ Interfaces with MIP/U50 firmware use a different link protocol and are not suppo
 ## Installation
 
 ```bash
-git clone https://github.com/<you>/lon2mqtt.git
+git clone https://github.com/AndresL71/lon2mqtt.git
 cd lon2mqtt
 pip install -r requirements.txt      # pyyaml, paho-mqtt
 cp config.example.yaml config.yaml   # edit it
