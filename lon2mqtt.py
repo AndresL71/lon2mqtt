@@ -53,7 +53,7 @@ try:
 except ImportError:  # pragma: no cover
     mqtt = None
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 log = logging.getLogger("lon2mqtt")
 
 
@@ -95,6 +95,10 @@ class LonError(Exception):
 
 class LonTimeout(LonError):
     pass
+
+
+class LonRejected(LonError):
+    """The node answered with a failure code."""
 
 
 class LonAuthRequired(LonError):
@@ -381,7 +385,12 @@ class NvInfo:
         self.raw = cfg
         self.is_output = bool(cfg[0] & 0x40)
         self.selector = ((cfg[0] & 0x3F) << 8) | cfg[1]
-        self.auth = bool(cfg[2] & 0x10) if len(cfg) > 2 else False
+        self.priority = bool(cfg[0] & 0x80)
+        b2 = cfg[2] if len(cfg) > 2 else 0x0F
+        self.turnaround = bool(b2 & 0x80)
+        self.service = (b2 >> 5) & 3            # 0 ackd, 1 unackd-repeated, 2 unackd
+        self.auth = bool(b2 & 0x10)
+        self.addr_index = b2 & 0x0F             # 15 = no address table entry
         self.bound = self.selector < BOUND_SELECTOR_LIMIT
 
     def __repr__(self):
@@ -395,6 +404,9 @@ class LonNode:
         self.nid = parse_neuron_id(neuron_id)
         self.subnet, self.node = subnet, node
         self.nv_info = {}
+        self.fail_count = 0                 # consecutive timeouts (bridge back-off)
+        self.retry_at = 0.0
+        self.unresolved = False             # NV configuration still to be queried
 
     @property
     def nid_hex(self):
@@ -402,6 +414,8 @@ class LonNode:
 
 
 def parse_neuron_id(text):
+    if isinstance(text, (int, float)):
+        raise ValueError("put the Neuron ID in quotes in the YAML file (it was read as a number)")
     h = re.sub(r"[^0-9a-fA-F]", "", str(text))
     if len(h) != 12:
         raise ValueError(f"Neuron ID must have 12 hex digits (48 bits), got '{text}'")
@@ -431,6 +445,7 @@ class LonLink:
         self._reader = None
         self._stop = threading.Event()
         self.on_packet = []                  # callbacks(packet) for unsolicited traffic
+        self.on_traffic = []                 # callbacks(direction, packet) for every packet
         self.connected = False
 
     # ---------------------------------------------------------------- lifecycle
@@ -504,10 +519,13 @@ class LonLink:
         if not p:
             return
         log.debug("RX %s", data.hex())
+        for cb in self.on_traffic:
+            cb("rx", p)
         pend = self._pending
         if pend and pend[0](p):
             pend[2].append(p)
-            pend[1].set()
+            if not pend[3]:                 # single-response transaction
+                pend[1].set()
             return
         for cb in self.on_packet:
             cb(p)
@@ -518,9 +536,11 @@ class LonLink:
         return self._tid
 
     def _npdu(self, pdufmt, dest, pdu):
-        """dest: bytes(6) Neuron ID or (subnet, node)."""
+        """dest: bytes(6) Neuron ID, (subnet, node) or ("broadcast", subnet) with 0 = domain."""
         if isinstance(dest, (bytes, bytearray)):
             addrfmt, addr = 3, bytes([self.src_subnet, 0x80 | self.src_node, 0x00]) + dest
+        elif dest[0] == "broadcast":
+            addrfmt, addr = 0, bytes([self.src_subnet, 0x80 | self.src_node, dest[1]])
         else:
             addrfmt, addr = 2, bytes([self.src_subnet, 0x80 | self.src_node,
                                       dest[0], 0x80 | dest[1]])
@@ -530,18 +550,74 @@ class LonLink:
     def _to_me(self, p):
         return p["dst"] == ("node", (self.src_subnet, self.src_node)) and p["domain"] == self.domain
 
-    def _transact(self, lpdu, matcher, timeout):
+    def _send(self, lpdu):
+        self._write(umip_encode(NI_L2_SEND, lpdu))
+        if self.on_traffic:
+            crc = crc16_lontalk(lpdu)
+            p = parse_lpdu(lpdu + bytes([crc >> 8, crc & 0xFF]))
+            if p:
+                for cb in self.on_traffic:
+                    cb("tx", p)
+
+    def _transact(self, lpdu, matcher, timeout, collect=False):
+        """Send and wait for the first matching packet, or (collect) for all within timeout."""
         if not self.connected:
             raise LonError("link not connected")
         with self._tx_lock:
             ev, res = threading.Event(), []
-            self._pending = (matcher, ev, res)
+            self._pending = (matcher, ev, res, collect)
             try:
-                self._write(umip_encode(NI_L2_SEND, lpdu))
+                self._send(lpdu)
                 ev.wait(timeout)
             finally:
                 self._pending = None
+            if collect:
+                return res
             return res[0] if res else None
+
+    def send_unackd(self, dest, apdu, repeat=1):
+        """Unacknowledged APDU (no reply expected)."""
+        if not self.connected:
+            raise LonError("link not connected")
+        with self._tx_lock:
+            for i in range(repeat):
+                self._send(self._npdu(PDU_APDU, dest, apdu))
+                if i + 1 < repeat:
+                    time.sleep(0.05)
+
+    def send_ackd(self, dest, apdu, auth=False, what="message"):
+        """Acknowledged APDU; raises LonTimeout / LonAuthRequired."""
+        for attempt in range(self.retries):
+            tid = self._next_tid()
+            hdr = (0x80 if auth else 0) | (TPDU_ACKD << 4) | tid
+            lpdu = self._npdu(PDU_TPDU, dest, bytes([hdr]) + apdu)
+
+            def match(p, tid=tid):
+                if not self._to_me(p) or p["pdu"][0] & 0x0F != tid:
+                    return False
+                if p["pdufmt"] == PDU_TPDU and (p["pdu"][0] >> 4) & 7 == TPDU_ACK:
+                    return True
+                return p["pdufmt"] == PDU_AUTH and (p["pdu"][0] >> 4) & 3 == AUTH_CHALLENGE
+
+            p = self._transact(lpdu, match, self.timeout)
+            if p is None:
+                continue
+            if p["pdufmt"] == PDU_AUTH:
+                raise LonAuthRequired(f"{what} requires LonTalk authentication (not supported)")
+            return
+        raise LonTimeout(f"no ACK for {what}")
+
+    def broadcast_request(self, code, data=b"", window=1.0, subnet=0):
+        """Request/response to every node of the domain; returns [(src, response bytes)]."""
+        tid = self._next_tid()
+        lpdu = self._npdu(PDU_SPDU, ("broadcast", subnet),
+                          bytes([(SPDU_REQUEST << 4) | tid, code]) + data)
+
+        def match(p, tid=tid):
+            return (p["pdufmt"] == PDU_SPDU and self._to_me(p)
+                    and (p["pdu"][0] >> 4) & 7 == SPDU_RESPONSE and p["pdu"][0] & 0x0F == tid)
+
+        return [(p["src"], p["pdu"][1:]) for p in self._transact(lpdu, match, window, collect=True)]
 
     # ---------------------------------------------------------------- services
     def nm_request(self, node, code, data):
@@ -557,7 +633,7 @@ class LonLink:
             p = self._transact(lpdu, match, self.timeout)
             if p is None:
                 continue
-            if node.subnet is None:
+            if node.subnet is None and p["src"][0]:     # 0/0 = unconfigured device
                 node.subnet, node.node = p["src"]
                 log.info("Node %s is subnet/node %d/%d", node.name, *p["src"])
             resp = p["pdu"][1:]
@@ -566,9 +642,13 @@ class LonLink:
             if resp[0] == NM_SUCCESS(code):
                 return resp[1:]
             if resp[0] == NM_FAILURE(code):
-                raise LonError(f"NM request 0x{code:02x} rejected by {node.name}")
-            raise LonError(f"unexpected NM response code 0x{resp[0]:02x}")
-        raise LonTimeout(f"no response from {node.name} (NM 0x{code:02x})")
+                raise LonRejected(f"request 0x{code:02x} rejected by {node.name}")
+            raise LonError(f"unexpected response code 0x{resp[0]:02x} from {node.name}")
+        raise LonTimeout(f"no response from {node.name} (request 0x{code:02x})")
+
+    def nm_ackd(self, node, code, data=b""):
+        """Network-management command that nodes only accept as a non-request message."""
+        self.send_ackd(node.nid, bytes([code]) + data, what=f"command 0x{code:02x} to {node.name}")
 
     def query_nv_config(self, node, idx):
         cfg = self.nm_request(node, NM_QUERY_NV_CONFIG, nv_index_bytes(idx))
@@ -594,26 +674,7 @@ class LonLink:
             raise LonError(f"NV{idx} on {node.name} is an output; nodes ignore updates to outputs")
         dest = (node.subnet, node.node) if node.subnet is not None else node.nid
         apdu = bytes([0x80 | (info.selector >> 8), info.selector & 0xFF]) + value
-        for attempt in range(self.retries):
-            tid = self._next_tid()
-            hdr = (0x80 if info.auth else 0) | (TPDU_ACKD << 4) | tid
-            lpdu = self._npdu(PDU_TPDU, dest, bytes([hdr]) + apdu)
-
-            def match(p, tid=tid):
-                if not self._to_me(p) or p["pdu"][0] & 0x0F != tid:
-                    return False
-                if p["pdufmt"] == PDU_TPDU and (p["pdu"][0] >> 4) & 7 == TPDU_ACK:
-                    return True
-                return p["pdufmt"] == PDU_AUTH and (p["pdu"][0] >> 4) & 3 == AUTH_CHALLENGE
-
-            p = self._transact(lpdu, match, self.timeout)
-            if p is None:
-                continue
-            if p["pdufmt"] == PDU_AUTH:
-                raise LonAuthRequired(f"NV{idx} on {node.name} requires LonTalk authentication "
-                                      "(not supported)")
-            return
-        raise LonTimeout(f"no ACK from {node.name} for NV{idx} update")
+        self.send_ackd(dest, apdu, auth=info.auth, what=f"NV{idx} update on {node.name}")
 
 
 # ============================================================================
@@ -658,6 +719,9 @@ class Entity:
         self.last_payload = None
         self.last_on_level = 100.0
         self.next_poll = 0.0
+        self.state = None                    # last decoded state (dict)
+        self.updated = None                  # time.time() of the last successful read
+        self.error = None                    # last poll/write error text
 
     @property
     def poll_nv(self):
@@ -791,11 +855,20 @@ class Bridge:
         self.selector_map = {}
         self.link.on_packet.append(self._on_bus_packet)
         self.client = None
+        self.mqtt_connected = False
+        self.mqtt_enabled = bool(m.get("enabled", True)) and bool(m.get("broker"))
+        self.paused = threading.Event()      # set = polling suspended (commands still work)
+        self.on_state = []                   # callbacks(entity) after a state change or error
 
     # ------------------------------------------------------------ MQTT
     def mqtt_start(self):
+        if not self.mqtt_enabled:
+            log.info("MQTT disabled (no broker configured)")
+            return
         if mqtt is None:
-            sys.exit("Missing dependency: pip install paho-mqtt")
+            log.error("MQTT disabled: paho-mqtt is not installed (pip install paho-mqtt)")
+            self.mqtt_enabled = False
+            return
         m = self.cfg.get("mqtt", {})
         cid = m.get("client_id", f"lon2mqtt-{socket.gethostname()}")
         try:
@@ -808,6 +881,7 @@ class Bridge:
             c.tls_set()
         c.will_set(self.avail_topic, "offline", qos=1, retain=True)
         c.on_connect = self._on_connect
+        c.on_disconnect = self._on_disconnect
         c.on_message = self._on_message
         c.reconnect_delay_set(1, 60)
         c.connect_async(m.get("broker", "localhost"), int(m.get("port", 1883)),
@@ -815,7 +889,16 @@ class Bridge:
         c.loop_start()
         self.client = c
 
+    def _on_disconnect(self, *args):
+        self.mqtt_connected = False
+        log.warning("MQTT disconnected")
+
     def _on_connect(self, client, userdata, flags, rc, *args):
+        failed = rc.is_failure if hasattr(rc, "is_failure") else rc != 0
+        if failed:
+            log.error("MQTT connection refused (%s)", rc)
+            return
+        self.mqtt_connected = True
         log.info("MQTT connected (%s)", rc)
         client.subscribe(f"{self.base}/+/set", qos=1)
         client.subscribe(f"{self.prefix}/status", qos=1)    # HA birth message
@@ -844,22 +927,65 @@ class Bridge:
             self.client.publish(topic, json.dumps(conf), qos=1, retain=True)
 
     def _publish_state(self, e, raw):
-        payload = json.dumps(e.to_state(raw), sort_keys=True)
-        if payload != e.last_payload and self.client:
-            self.client.publish(e.state_topic, payload, qos=0, retain=True)
-            e.last_payload = payload
+        state = e.to_state(raw)
+        payload = json.dumps(state, sort_keys=True)
+        had_error, e.error, e.updated = e.error, None, time.time()
+        if payload != e.last_payload:
+            e.state, e.last_payload = state, payload
+            if self.client:
+                self.client.publish(e.state_topic, payload, qos=0, retain=True)
             log.info("%s <- %s", e.id, payload)
+        elif not had_error:
+            return
+        self._notify(e)
+
+    def _notify(self, e):
+        for cb in self.on_state:
+            try:
+                cb(e)
+            except Exception:
+                log.exception("state listener failed")
+
+    def _fail(self, e, err):
+        e.error = str(err)
+        self._notify(e)
+
+    def command(self, entity_id, payload):
+        """Queue a command for an entity (same payloads as the MQTT command topic)."""
+        for e in self.entities:
+            if e.id == entity_id:
+                if not e.writable:
+                    raise ValueError(f"{entity_id} is read-only")
+                self.jobs.put(("write", e, payload))
+                return
+        raise KeyError(entity_id)
 
     # ------------------------------------------------------------ LON side
-    def _resolve(self):
-        """Query NV configuration of every configured NV (selector, direction, auth)."""
-        self.selector_map.clear()
+    def _resolve(self, only=None):
+        """
+        Query NV configuration of every configured NV (selector, direction, auth).
+        A node that does not answer is skipped after its first timeout and resolved
+        again when it comes back, so a dead node cannot hold up start-up.
+        """
+        if only is None:
+            self.selector_map.clear()
+            for n in self.nodes:
+                n.unresolved = False
+        else:
+            only.unresolved = False
         for e in self.entities:
+            if only is not None and e.node is not only:
+                continue
             for idx, want_out in ((e.nv_in, False), (e.nv_out, True)):
-                if idx is None:
+                if idx is None or e.node.unresolved or self.stop.is_set():
                     continue
                 try:
                     info = self.link.nv_info(e.node, idx)
+                except LonTimeout as err:
+                    log.warning("%s does not answer (%s); will retry when it responds",
+                                e.node.name, err)
+                    e.node.unresolved = True
+                    continue
                 except LonError as err:
                     log.warning("%s: cannot query NV%s on %s: %s", e.id, idx, e.node.name, err)
                     continue
@@ -870,8 +996,8 @@ class Bridge:
                                 "out" if want_out else "in")
                 if info.auth:
                     log.warning("%s: NV%d requires authentication; writes will fail", e.id, idx)
-                if info.bound:
-                    self.selector_map.setdefault(info.selector, []).append(e)
+                if info.bound and e not in self.selector_map.setdefault(info.selector, []):
+                    self.selector_map[info.selector].append(e)
 
     def _on_bus_packet(self, p):
         sel = nv_update_in_packet(p)
@@ -882,12 +1008,27 @@ class Bridge:
             self.jobs.put(("poll_soon", e, 0.3))
 
     def _poll(self, e):
+        n = e.node
         try:
-            raw = self.link.nv_fetch(e.node, e.poll_nv)
+            raw = self.link.nv_fetch(n, e.poll_nv)
+            n.fail_count = 0
+            if n.unresolved:
+                self._resolve(n)
             if self.codec_size_ok(e, raw):
                 self._publish_state(e, raw)
+            else:
+                self._fail(e, f"NV{e.poll_nv} returned {len(raw)} bytes, "
+                              f"{e.codec.name} expects {e.codec.size}")
+        except LonTimeout as err:
+            # Back off a silent node so it cannot stall commands and other polls.
+            n.fail_count += 1
+            delay = min(60, 5 * 2 ** (n.fail_count - 1))
+            n.retry_at = time.monotonic() + delay
+            log.warning("%s: %s; retrying %s in %ds", e.id, err, n.name, delay)
+            self._fail(e, err)
         except LonError as err:
             log.warning("%s: poll failed: %s", e.id, err)
+            self._fail(e, err)
 
     @staticmethod
     def codec_size_ok(e, raw):
@@ -902,6 +1043,7 @@ class Bridge:
             data = e.from_command(payload)
         except (ValueError, KeyError, TypeError) as err:
             log.warning("%s: invalid command %r: %s", e.id, payload, err)
+            self._fail(e, f"invalid command: {err}")
             return
         try:
             self.link.nv_update(e.node, e.nv_in, data)
@@ -911,6 +1053,7 @@ class Bridge:
             e.next_poll = time.monotonic() + 0.3         # confirm through the feedback NV
         except LonError as err:
             log.error("%s: write failed: %s", e.id, err)
+            self._fail(e, f"write failed: {err}")
 
     def _connect_link(self):
         backoff = 1
@@ -937,9 +1080,11 @@ class Bridge:
                 self.link.close()
                 if not self._connect_link():
                     break
-                self.client.publish(self.avail_topic, "online", qos=1, retain=True)
+                if self.client:
+                    self.client.publish(self.avail_topic, "online", qos=1, retain=True)
             now = time.monotonic()
-            pollable = [e for e in self.entities if e.next_poll != float("inf")]
+            pollable = [] if self.paused.is_set() else \
+                [e for e in self.entities if e.next_poll != float("inf")]
             due = min((e.next_poll for e in pollable), default=now + 1)
             try:
                 job = self.jobs.get(timeout=max(0.0, min(due - now, 1.0)))
@@ -952,9 +1097,14 @@ class Bridge:
                 elif kind == "poll_soon":
                     e.next_poll = min(e.next_poll, time.monotonic() + arg)
                 continue
+            if self.paused.is_set():                         # paused while waiting
+                continue
             now = time.monotonic()
             for e in sorted(pollable, key=lambda x: x.next_poll):
                 if e.next_poll <= now:
+                    if e.node.retry_at > now:               # node is backing off
+                        e.next_poll = e.node.retry_at
+                        continue
                     self._poll(e)
                     e.next_poll = (now + e.poll_interval) if e.poll_interval > 0 else float("inf")
                     break                                    # re-check the job queue
@@ -975,12 +1125,16 @@ class Bridge:
 # Configuration
 # ============================================================================
 
-def load_config(path):
+def load_config(path, strict=True):
     with open(path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("configuration must be a YAML mapping")
     for key in ("lonworks", "nodes"):
-        if key not in cfg:
+        if key not in cfg and strict:
             raise ValueError(f"configuration is missing '{key}'")
+    cfg.setdefault("lonworks", {})
+    cfg["nodes"] = cfg.get("nodes") or []
     return cfg
 
 

@@ -1,0 +1,782 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lon2mqtt</title>
+<style>
+:root {
+  --enamel: #e4e8e5;      /* cabinet grey: page */
+  --plate: #f6f8f6;       /* surfaces */
+  --plate-2: #edf0ed;     /* table heads, wells */
+  --ink: #16262b;
+  --muted: #56666b;
+  --rule: #c2cac6;
+  --petrol: #0b5c6b;      /* bus conductor, actions */
+  --petrol-ink: #ffffff;
+  --ok: #2a7a52;
+  --amber: #a8760a;       /* service LED */
+  --fault: #b0352d;
+  --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --enamel: #111a1c; --plate: #18262a; --plate-2: #1f3035; --ink: #e2eae8; --muted: #94a5a8;
+    --rule: #2e4046; --petrol: #58b6c7; --petrol-ink: #0c1b1f; --ok: #5cc08c; --amber: #e0b040;
+    --fault: #f0786c; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { font-size: 14px; }
+body { margin: 0; background: var(--enamel); color: var(--ink); font-family: var(--sans); line-height: 1.45; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--petrol); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-size: 0.93em; }
+.muted { color: var(--muted); }
+h1, h2, h3 { margin: 0; font-weight: 650; }
+h2 { font-size: 1.15rem; }
+h3 { font-size: 1rem; }
+
+/* ---- top bar ---------------------------------------------------------- */
+.top { display: flex; align-items: flex-end; gap: 28px; padding: 14px 24px 0; flex-wrap: wrap; }
+.brand { font-size: 1.45rem; font-weight: 700; letter-spacing: -0.01em; padding-bottom: 8px; }
+.brand small { font-weight: 400; font-size: 0.8rem; color: var(--muted); margin-left: 6px; }
+nav { display: flex; gap: 2px; flex-wrap: wrap; }
+nav button { background: none; border: 0; border-bottom: 3px solid transparent; padding: 8px 14px 9px;
+  cursor: pointer; color: var(--muted); font-weight: 550; }
+nav button:hover { color: var(--ink); }
+nav button[aria-current="page"] { color: var(--ink); border-bottom-color: var(--petrol); }
+nav .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--amber);
+  margin-left: 6px; vertical-align: 1px; }
+
+/* ---- signal path: where the chain from Home Assistant to the bus is broken */
+.path { display: flex; align-items: stretch; margin: 0 24px; padding: 14px 16px; background: var(--plate);
+  border: 1px solid var(--rule); border-radius: 4px; }
+.station { flex: 0 1 auto; min-width: 150px; }
+.station .head { display: flex; align-items: center; gap: 8px; font-weight: 650; }
+.station .lamp { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--muted); flex: none; }
+.station.ok .lamp { background: var(--ok); border-color: var(--ok); }
+.station.down .lamp { background: var(--fault); border-color: var(--fault); }
+.station .detail { margin-left: 19px; color: var(--muted); font-size: 0.93rem; }
+.station .detail button { margin-top: 5px; }
+.seg { flex: 1 1 40px; min-width: 28px; margin: 5px 12px 0; height: 0; border-top: 3px solid var(--rule); }
+.seg.ok { border-top-color: var(--petrol); }
+.seg.down { border-top: 3px dashed var(--fault); }
+@media (max-width: 860px) {
+  .path { flex-direction: column; gap: 4px; }
+  .seg { flex: none; width: 0; height: 14px; margin: 0 0 0 4px; border-top: 0; border-left: 3px solid var(--rule); }
+  .seg.ok { border-left-color: var(--petrol); }
+  .seg.down { border-top: 0; border-left: 3px dashed var(--fault); }
+}
+
+.banner { margin: 12px 24px 0; padding: 10px 14px; border-left: 4px solid var(--fault); background: var(--plate); }
+main { padding: 18px 24px 60px; max-width: 1320px; }
+section[hidden] { display: none; }
+
+/* ---- controls --------------------------------------------------------- */
+.btn { border: 1px solid var(--rule); background: var(--plate); padding: 5px 11px; border-radius: 3px;
+  cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--petrol); }
+.btn.primary { background: var(--petrol); border-color: var(--petrol); color: var(--petrol-ink); font-weight: 600; }
+.btn.danger { color: var(--fault); }
+.btn.danger:hover { border-color: var(--fault); }
+.btn.on { background: var(--ok); border-color: var(--ok); color: var(--petrol-ink); font-weight: 600; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.small { padding: 2px 8px; font-size: 0.9rem; }
+input[type=text], input[type=number], input[type=password], select {
+  border: 1px solid var(--rule); background: var(--plate); padding: 5px 8px; border-radius: 3px; min-width: 0; }
+input[type=range] { accent-color: var(--petrol); width: 150px; vertical-align: middle; }
+label.field { display: grid; gap: 3px; font-size: 0.93rem; color: var(--muted); }
+label.field > input, label.field > select { color: var(--ink); }
+label.check { display: inline-flex; gap: 6px; align-items: center; }
+.hint { font-size: 0.9rem; color: var(--muted); }
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 5px 10px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+th { font-weight: 600; color: var(--muted); background: var(--plate-2); font-size: 0.9rem; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--plate); }
+.scroll table tr:last-child td { border-bottom: 0; }
+
+/* ---- panel: nodes tapped off the bus rail ---------------------------- */
+.rail { border-left: 3px solid var(--petrol); margin-left: 6px; padding: 4px 0 4px 0; display: grid;
+  grid-template-columns: minmax(0, 1fr); gap: 18px; }
+.node { position: relative; margin-left: 26px; min-width: 0; }
+.node::before { content: ""; position: absolute; left: -26px; top: 13px; width: 20px; border-top: 3px solid var(--petrol); }
+.node::after { content: ""; position: absolute; left: -9px; top: 8px; width: 13px; height: 13px; border-radius: 50%;
+  background: var(--ok); border: 2px solid var(--enamel); }
+.node.silent::after { background: var(--fault); }
+.node.idle::after { background: var(--muted); }
+.nameplate { display: flex; gap: 6px 18px; align-items: baseline; flex-wrap: wrap; margin-bottom: 6px; padding-left: 12px; }
+.nameplate .where { color: var(--muted); }
+.rail table { table-layout: fixed; min-width: 680px; }
+.ctl { white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.ent .value { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.ent .value.off { font-weight: 400; color: var(--muted); }
+.ent .err { color: var(--fault); font-weight: 400; white-space: normal; }
+.ent td:nth-child(3) > * + * { margin-left: 8px; }
+.ent td:nth-child(3) input[type=range] { width: min(150px, 55%); }
+.empty { padding: 28px; background: var(--plate); border: 1px dashed var(--rule); border-radius: 4px; max-width: 62ch; }
+
+/* ---- node tools ------------------------------------------------------- */
+.tools { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 24px; align-items: start; }
+.tools > * { min-width: 0; }
+@media (max-width: 900px) { .tools { grid-template-columns: minmax(0, 1fr); } }
+.devlist h3 { margin: 16px 0 6px; color: var(--muted); font-size: 0.93rem; font-weight: 600; }
+.devlist h3:first-of-type { margin-top: 12px; }
+.dev { display: block; width: 100%; text-align: left; background: var(--plate); border: 1px solid var(--rule);
+  border-left: 4px solid var(--rule); padding: 6px 10px; margin-bottom: 4px; border-radius: 3px; cursor: pointer; }
+.dev:hover { border-color: var(--petrol); }
+.dev[aria-pressed=true] { border-left-color: var(--petrol); border-color: var(--petrol); }
+.dev .nid { display: block; color: var(--muted); }
+.dev.pin { border-left-color: var(--amber); }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.actions .gap { flex-basis: 100%; height: 0; }
+.result { margin-top: 14px; }
+.result h3 { margin: 16px 0 6px; }
+.result h3:first-child { margin-top: 0; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 18px; background: var(--plate);
+  border: 1px solid var(--rule); border-radius: 4px; padding: 10px 14px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.note { border-left: 4px solid var(--amber); background: var(--plate); padding: 8px 12px; margin: 8px 0; }
+.note.fault { border-left-color: var(--fault); }
+.dump { font-family: var(--mono); white-space: pre; background: var(--plate); border: 1px solid var(--rule);
+  padding: 10px 14px; border-radius: 4px; overflow-x: auto; }
+.tag { display: inline-block; padding: 0 6px; border: 1px solid var(--rule); border-radius: 3px; font-size: 0.88rem; }
+.tag.in { border-color: var(--petrol); color: var(--petrol); }
+
+/* ---- monitor ---------------------------------------------------------- */
+.bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+.bar .grow { flex: 1; }
+.feed table { min-width: 900px; }
+.feed { height: 46vh; overflow: auto; background: var(--plate); border: 1px solid var(--rule); border-radius: 4px; }
+.feed table { font-size: 0.93rem; }
+.feed th { position: sticky; top: 0; }
+.feed td { padding: 2px 10px; white-space: nowrap; border-bottom: 0; }
+.feed td.wrap { white-space: normal; }
+.feed tr.tx td { color: var(--petrol); }
+.feed tr.bad td { color: var(--fault); }
+.logs { height: 22vh; overflow: auto; background: var(--plate); border: 1px solid var(--rule); border-radius: 4px;
+  padding: 8px 12px; font-family: var(--mono); font-size: 0.9rem; white-space: pre-wrap; }
+.logs .WARNING { color: var(--amber); } .logs .ERROR { color: var(--fault); }
+
+/* ---- settings --------------------------------------------------------- */
+.form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; max-width: 1180px; }
+.group { background: var(--plate); border: 1px solid var(--rule); border-radius: 4px; padding: 14px 16px 16px; }
+.group > h2 { margin-bottom: 4px; }
+.group > p { margin: 0 0 12px; color: var(--muted); max-width: 74ch; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px 16px; }
+.cfg-node { border-top: 1px solid var(--rule); padding-top: 14px; margin-top: 14px; }
+.cfg-node .grid { grid-template-columns: minmax(160px, 2fr) minmax(120px, 1fr) minmax(150px, 1fr) auto; align-items: end; }
+@media (max-width: 760px) { .cfg-node .grid { grid-template-columns: minmax(0, 1fr); } }
+.cfg-ents { margin-top: 10px; }
+.cfg-ents table { min-width: 820px; }
+.cfg-ents input, .cfg-ents select { width: 100%; padding: 3px 6px; }
+.cfg-ents td, .cfg-ents th { padding: 4px 5px; }
+.cfg-ents .n { width: 68px; }
+.cfg-ents .more td { background: var(--plate-2); }
+.more-grid { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: end; }
+.more-grid label.field { width: 120px; }
+.savebar { position: sticky; bottom: 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  background: var(--enamel); padding: 12px 0; border-top: 1px solid var(--rule); }
+.savebar .msg { color: var(--fault); }
+
+dialog { border: 1px solid var(--rule); border-radius: 5px; background: var(--plate); color: var(--ink);
+  padding: 18px 20px; width: min(460px, 92vw); }
+dialog::backdrop { background: rgba(10, 20, 24, 0.5); }
+dialog h2 { margin-bottom: 8px; }
+dialog .body { display: grid; gap: 10px; margin: 10px 0 16px; }
+dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
+#toast { position: fixed; right: 18px; bottom: 18px; background: var(--ink); color: var(--enamel); padding: 9px 14px;
+  border-radius: 4px; opacity: 0; transition: opacity 0.2s; pointer-events: none; max-width: 60ch; }
+#toast.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #toast { transition: none; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">lon2mqtt<small id="version"></small></div>
+  <nav aria-label="Views">
+    <button data-view="panel" aria-current="page">Panel</button>
+    <button data-view="tools">Node tools</button>
+    <button data-view="monitor">Bus monitor</button>
+    <button data-view="settings">Settings<span class="dot" id="dirty-dot" hidden></span></button>
+  </nav>
+</header>
+<div class="path" id="path" aria-label="Connection path"></div>
+<div id="banner"></div>
+<main>
+  <section id="view-panel"></section>
+  <section id="view-tools" hidden></section>
+  <section id="view-monitor" hidden></section>
+  <section id="view-settings" hidden></section>
+</main>
+<dialog id="dlg"><form method="dialog"><h2></h2><div class="body"></div>
+  <div class="row"><button class="btn" value="cancel">Cancel</button><button class="btn primary" value="ok"></button></div>
+</form></dialog>
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "value" || k === "checked" || k === "disabled" || k === "hidden") el[k] = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false)
+    el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+async function api(path, body) {
+  const opt = body === undefined ? {} : {method: "POST", body: JSON.stringify(body),
+    headers: {"Content-Type": "application/json", "X-Requested-With": "lon2mqtt"}};
+  const r = await fetch(path, opt);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `request failed (${r.status})`);
+  return data;
+}
+let toastTimer;
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3500);
+}
+function ask({title, body = [], confirm = "OK", danger = false}) {
+  const d = $("#dlg");
+  $("h2", d).textContent = title;
+  $(".body", d).replaceChildren(...[].concat(body));
+  const ok = $("button[value=ok]", d);
+  ok.textContent = confirm; ok.className = "btn " + (danger ? "danger" : "primary");
+  return new Promise(res => {
+    d.onclose = () => res(d.returnValue === "ok");
+    d.returnValue = "cancel"; d.showModal();
+    const first = $("input, select", d); if (first) first.focus();
+  });
+}
+const slug = s => String(s).toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+const clock = t => { const d = new Date(t * 1000); return d.toTimeString().slice(0, 8) + "." + String(d.getMilliseconds()).padStart(3, "0"); };
+
+let S = null;            // last /api/state
+let skew = 0;            // browser clock minus server clock, seconds
+let meta = null;         // /api/config extras (ports, types)
+let draft = null;        // configuration being edited
+let dirty = false;
+let view = "panel";
+
+/* ======================================================================= views */
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => show(b.dataset.view)));
+function show(v) {
+  view = v;
+  document.querySelectorAll("nav button").forEach(b => b.setAttribute("aria-current", b.dataset.view === v ? "page" : "false"));
+  for (const s of document.querySelectorAll("main > section")) s.hidden = s.id !== "view-" + v;
+  if (v === "settings") renderSettings();
+  if (v === "tools") renderDevList();
+}
+
+/* ======================================================================= signal path */
+function station(cls, name, detail) {
+  return h("div", {class: "station " + cls}, h("div", {class: "head"}, h("span", {class: "lamp"}), name),
+    h("div", {class: "detail"}, detail));
+}
+function renderPath() {
+  const s = S, m = s.mqtt, l = s.link, b = s.bridge;
+  const answering = s.nodes.filter(n => !n.silent && n.entities.some(e => e.updated)).length;
+  const mq = !m.enabled ? ["", "Not configured"] : m.connected ? ["ok", m.broker] : ["down", `${m.broker} is not reachable`];
+  const br = !b.running ? ["down", "Stopped: fix the configuration"] : b.paused ? ["", "Polling paused"] : ["ok", `Polling ${s.nodes.reduce((a, n) => a + n.entities.length, 0)} entities`];
+  const itf = l.connected ? ["ok", `${l.port}, layer 2`] : ["down", `${l.port} is not available`];
+  const busOk = l.connected && (answering > 0 || s.nodes.length === 0);
+  const bus = !l.connected ? ["", "No interface"] : s.nodes.length === 0 ? ["ok", "No nodes configured"]
+    : [answering ? "ok" : "down", `${answering} of ${s.nodes.length} nodes answering`];
+  const toggle = b.running ? h("button", {class: "btn small", onclick: async () => {
+    await api("/api/bridge", {action: b.paused ? "resume" : "pause"}); refresh(); }}, b.paused ? "Resume polling" : "Pause polling") : null;
+  $("#path").replaceChildren(
+    station(mq[0], "MQTT broker", mq[1]),
+    h("div", {class: "seg " + (m.enabled ? (m.connected ? "ok" : "down") : "")}),
+    station(br[0], "Bridge", [br[1], h("br"), toggle]),
+    h("div", {class: "seg " + (l.connected ? "ok" : "down")}),
+    station(itf[0], "LON interface", itf[1]),
+    h("div", {class: "seg " + (busOk ? "ok" : l.connected ? "down" : "")}),
+    station(bus[0], "LON bus", [bus[1], h("br"), `Domain ${l.domain || "(zero length)"}, this bridge is ${l.subnet}/${l.node}`]));
+  $("#version").textContent = "v" + s.version;
+  $("#banner").replaceChildren(s.config_error ? h("div", {class: "banner"},
+    h("strong", {}, "The configuration cannot be used: "), s.config_error, " ",
+    h("button", {class: "btn small", onclick: () => show("settings")}, "Open settings")) : "");
+}
+
+/* ======================================================================= panel */
+const cells = {};          // entity id -> {value, ctl, age, data}
+let panelSig = "";
+function age(t) {
+  if (!t) return "never";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - skew - t));
+  return s < 2 ? "now" : s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+async function command(e, payload) {
+  if (e.confirm && !await ask({title: `Send to ${e.name}?`, body: h("p", {}, "This entity is marked as needing confirmation."), confirm: "Send"})) return;
+  try { await api("/api/entity", {id: e.id, payload}); } catch (err) { toast(err.message); }
+}
+function control(e) {
+  if (e.type === "light") {
+    const btn = h("button", {class: "btn small"}, "Off");
+    btn.onclick = () => command(e, {state: btn.classList.contains("on") ? "OFF" : "ON"});
+    const out = [btn];
+    let slider = null;
+    if (e.dimmable) {
+      slider = h("input", {type: "range", min: 0, max: 100, step: 1, value: 0, "aria-label": `${e.name} brightness`});
+      slider.onchange = () => command(e, slider.value === "0" ? {state: "OFF"} : {state: "ON", brightness: Math.round(slider.value * 2)});
+      slider.oninput = () => { slider.dataset.held = Date.now(); };
+      out.push(slider);
+    }
+    return {nodes: out, btn, slider};
+  }
+  if (e.type === "switch") {
+    const btn = h("button", {class: "btn small"}, "Off");
+    btn.onclick = () => command(e, btn.classList.contains("on") ? "OFF" : "ON");
+    return {nodes: [btn], btn};
+  }
+  if (e.type === "number") {
+    const inp = h("input", {type: "number", min: e.min, max: e.max, step: e.step || "any", style: "width:110px", "aria-label": `${e.name} value`});
+    const set = h("button", {class: "btn small", onclick: () => inp.value !== "" && command(e, String(inp.value))}, "Set");
+    return {nodes: [inp, set]};
+  }
+  return {nodes: []};
+}
+function paintEntity(e) {
+  const c = cells[e.id]; if (!c) return;
+  Object.assign(c.data, e);
+  const st = e.state, v = c.value;
+  v.className = "value"; v.replaceChildren();
+  if (!st) v.append(h("span", {class: "muted"}, e.error ? "" : "Waiting for first reading"));
+  else if (c.type === "light") { const on = st.state === "ON"; v.textContent = on ? `On, ${st.value}%` : "Off"; v.classList.toggle("off", !on); }
+  else if (c.type === "switch" || c.type === "binary_sensor") { v.textContent = st.state === "ON" ? "On" : "Off"; v.classList.toggle("off", st.state !== "ON"); }
+  else v.textContent = st.value === undefined ? st.raw : `${st.value}${c.unit ? " " + c.unit : ""}`;
+  if (e.error) v.append(h("div", {class: "err"}, e.error));
+  if (c.ctl.btn && st) { const on = st.state === "ON"; c.ctl.btn.classList.toggle("on", on); c.ctl.btn.textContent = on ? "On" : "Off"; c.ctl.btn.setAttribute("aria-pressed", on); }
+  if (c.ctl.slider && st && Date.now() - (c.ctl.slider.dataset.held || 0) > 4000) c.ctl.slider.value = st.state === "ON" ? st.value : 0;
+  c.updated = e.updated;
+  c.age.textContent = age(e.updated);
+}
+function renderPanel() {
+  const sig = JSON.stringify(S.nodes.map(n => [n.id, n.entities.map(e => [e.id, e.type, e.dimmable, e.min, e.max])]));
+  const root = $("#view-panel");
+  if (sig !== panelSig) {
+    panelSig = sig;
+    for (const k in cells) delete cells[k];
+    if (!S.nodes.length) {
+      root.replaceChildren(h("div", {class: "empty"}, h("h2", {}, "No nodes yet"),
+        h("p", {}, "Set the serial port and the LON domain in Settings, then use Node tools to find the devices on the bus and add their network variables as entities."),
+        h("button", {class: "btn primary", onclick: () => show("settings")}, "Open settings")));
+      return;
+    }
+    const rail = h("div", {class: "rail"});
+    for (const n of S.nodes) {
+      const body = h("tbody");
+      for (const e of n.entities) {
+        const ctl = control(e), value = h("td", {class: "value"}), ageEl = h("td", {class: "muted num"});
+        cells[e.id] = {value, ctl, age: ageEl, type: e.type, unit: e.unit, data: {}};
+        const nv = [e.nv_in != null ? `in ${e.nv_in}` : null, e.nv_out != null ? `out ${e.nv_out}` : null].filter(Boolean).join(", ");
+        body.append(h("tr", {class: "ent"}, h("td", {}, e.name), value, h("td", {}, ctl.nodes),
+          h("td", {class: "muted"}, `${e.snvt_type}, NV ${nv}`), ageEl));
+      }
+      rail.append(h("div", {class: "node", id: "node-" + n.id},
+        h("div", {class: "nameplate"}, h("h2", {}, n.name), h("span", {class: "mono where"}, n.neuron_id),
+          h("span", {class: "where addr"}),
+          h("button", {class: "btn small", onclick: () => { selectDevice({key: n.neuron_id, name: n.name}); show("tools"); }}, "Open in node tools")),
+        h("div", {class: "scroll"}, h("table", {}, h("colgroup", {}, ["24%", "16%", "26%", "24%", "10%"].map(w => h("col", {style: "width:" + w}))), body))));
+    }
+    root.replaceChildren(rail);
+  }
+  for (const n of S.nodes) {
+    const el = $("#node-" + n.id); if (!el) continue;
+    const heard = n.entities.some(e => e.updated);
+    el.className = "node" + (n.silent ? " silent" : heard ? "" : " idle");
+    $(".addr", el).textContent = n.silent ? `not answering, next try in ${n.retry_in} s`
+      : n.subnet != null ? `subnet ${n.subnet}, node ${n.node}` : "address not known yet";
+    n.entities.forEach(paintEntity);
+  }
+}
+setInterval(() => { for (const c of Object.values(cells)) c.age.textContent = age(c.updated); }, 1000);
+
+/* ======================================================================= node tools */
+let dev = null;            // {key, name}
+let busy = false;
+function buildTools() {
+  $("#view-tools").replaceChildren(h("div", {class: "tools"},
+    h("div", {class: "devlist"},
+      h("button", {class: "btn primary", id: "find", onclick: findDevices}, "Find devices"),
+      h("p", {class: "hint"}, "Asks every device on the domain to identify itself. Press a device's service pin to make it appear here as well."),
+      h("div", {id: "devs"}),
+      h("h3", {}, "Open by Neuron ID"),
+      h("form", {style: "display:flex;gap:6px", onsubmit: ev => { ev.preventDefault(); const v = $("#nid").value.replace(/[^0-9a-f]/gi, "").toLowerCase();
+        if (v.length !== 12) return toast("A Neuron ID has 12 hex digits"); selectDevice({key: v, name: v}); }},
+        h("input", {type: "text", id: "nid", class: "mono", placeholder: "021234567890", "aria-label": "Neuron ID", style: "flex:1"}),
+        h("button", {class: "btn"}, "Open"))),
+    h("div", {id: "devpane"}, h("div", {class: "empty"}, h("h2", {}, "Pick a device"),
+      h("p", {}, "Choose a configured node, find the devices on the bus, or type a Neuron ID.")))));
+}
+function devButton(d, cls) {
+  return h("button", {class: "dev " + (cls || ""), "aria-pressed": dev && dev.key === d.key ? "true" : "false",
+    onclick: () => selectDevice(d)}, d.name, h("span", {class: "nid mono"}, d.key),
+    d.where ? h("span", {class: "nid"}, d.where) : null);
+}
+function renderDevList() {
+  if (!S || !$("#devs")) return;
+  const known = new Set(S.nodes.map(n => n.neuron_id));
+  const out = [h("h3", {}, "Configured nodes")];
+  if (!S.nodes.length) out.push(h("p", {class: "hint"}, "None yet."));
+  for (const n of S.nodes) out.push(devButton({key: n.neuron_id, name: n.name, where: n.subnet != null ? `subnet ${n.subnet}, node ${n.node}` : null}));
+  const found = S.discovered.filter(d => !known.has(d.neuron_id));
+  if (S.discovered.length) {
+    out.push(h("h3", {}, `Other devices found (${found.length})`));
+    out.push(h("p", {class: "hint"}, found.length ? `${S.discovered.length} devices answered. These are not in the configuration.`
+      : `All ${S.discovered.length} devices that answered are already configured.`));
+    for (const d of found) out.push(devButton({key: d.neuron_id, name: d.unconfigured ? "Unconfigured device" : `Device ${d.subnet}/${d.node}`,
+      where: `program ${d.program_id.text || d.program_id.hex}`}));
+  }
+  if (S.pins.length) {
+    out.push(h("h3", {}, "Service pin pressed"));
+    const seen = new Set();
+    for (const p of S.pins) { if (seen.has(p.neuron_id)) continue; seen.add(p.neuron_id);
+      out.push(devButton({key: p.neuron_id, name: `Pressed at ${clock(p.t).slice(0, 8)}`, where: `program ${p.program_id.text || p.program_id.hex}`}, "pin")); }
+  }
+  $("#devs").replaceChildren(...out);
+}
+async function findDevices() {
+  const b = $("#find"); b.disabled = true; b.textContent = "Searching…";
+  try { const r = await api("/api/tool", {tool: "find"}); toast(`${r.result.length} devices answered`); await refresh(); }
+  catch (e) { toast(e.message); }
+  b.disabled = false; b.textContent = "Find devices";
+}
+const ACTIONS = [
+  ["status", "Read status"], ["info", "Device details"], ["domains", "Domain table"], ["addresses", "Address table"],
+  ["nvs", "Network variables"], ["aliases", "Alias table"], ["memory", "Read memory"], null,
+  ["wink", "Wink"], ["clear", "Clear status"], ["online", "Set online"], ["offline", "Set offline"], ["reset", "Reset device"],
+];
+function selectDevice(d) {
+  dev = d;
+  if (!$("#devpane")) buildTools();
+  renderDevList();
+  $("#devpane").replaceChildren(
+    h("h2", {}, d.name), h("div", {class: "mono muted"}, d.key),
+    h("div", {class: "actions"}, ACTIONS.map(a => a === null ? h("span", {class: "gap"}) :
+      h("button", {class: "btn" + (a[0] === "reset" || a[0] === "offline" ? " danger" : ""), onclick: () => action(a[0])}, a[1]))),
+    h("div", {class: "result", id: "out"}, h("p", {class: "hint"}, "Reading does not change the device. Wink makes it identify itself, usually by blinking.")));
+}
+async function run(tool, args, label) {
+  if (busy) return null;
+  busy = true;
+  const out = $("#out");
+  const prog = h("p", {class: "muted", id: "progress"}, `${label}…`);
+  out.replaceChildren(prog);
+  document.querySelectorAll("#devpane .actions .btn").forEach(b => b.disabled = true);
+  try { return (await api("/api/tool", {tool, node: dev.key, args})).result; }
+  catch (e) { out.replaceChildren(h("div", {class: "note fault"}, h("strong", {}, `${label} failed. `), e.message)); return null; }
+  finally { busy = false; document.querySelectorAll("#devpane .actions .btn").forEach(b => b.disabled = false); }
+}
+const yes = v => v ? "yes" : "no";
+function kv(obj, labels) {
+  const dl = h("dl", {class: "kv"});
+  for (const [k, label, fmt] of labels) if (obj[k] !== undefined) dl.append(h("dt", {}, label), h("dd", {}, fmt ? fmt(obj[k], obj) : String(obj[k] ?? "")));
+  return dl;
+}
+function table(cols, rows) {
+  return h("div", {class: "scroll"}, h("table", {}, h("thead", {}, h("tr", {}, cols.map(c => h("th", {class: c[2] || ""}, c[0])))),
+    h("tbody", {}, rows.map(r => h("tr", {}, cols.map(c => h("td", {class: c[2] || ""}, c[1](r))))))));
+}
+const mono = v => h("span", {class: "mono"}, v);
+const STATUS = [["state", "State", (v, o) => `${v} (0x${o.state_raw.toString(16)})`], ["error_log", "Last error", (v, o) => `${v} (${o.error_log_raw})`],
+  ["reset_cause", "Last reset"], ["firmware_version", "Firmware version"], ["model_number", "Model number"],
+  ["transmit_errors", "Transmit errors"], ["transaction_timeouts", "Transaction timeouts"],
+  ["receive_transaction_full", "Receive transactions full"], ["lost_messages", "Lost messages"], ["missed_messages", "Missed messages"]];
+function programId(p) { return p.text ? `${p.text} (${p.hex})` : p.manufacturer !== undefined ?
+  `${p.hex}: manufacturer ${p.manufacturer}, device class ${p.device_class}, usage ${p.usage}, channel ${p.channel_type}, model ${p.model}` : p.hex; }
+async function action(name) {
+  const out = $("#out");
+  if (name === "status") {
+    const r = await run("status", {}, "Reading status"); if (!r) return;
+    out.replaceChildren(h("h3", {}, "Status"), kv(r, [["subnet", "Address", (v, o) => v == null ? "unknown" : `subnet ${v}, node ${o.node}`], ...STATUS]));
+  } else if (name === "info") {
+    const r = await run("info", {}, "Reading device details"); if (!r) return;
+    const ro = r.read_only, bufs = Object.entries(ro.buffers).map(([k, v]) => ({name: k.replace("_", " "), ...v}));
+    out.replaceChildren(h("h3", {}, "Status"), kv(r.status, STATUS),
+      h("h3", {}, "Read-only data"), kv(ro, [["neuron_id", "Neuron ID", mono], ["program_id", "Program ID", programId], ["state", "State"],
+        ["model_number", "Model number", (v, o) => `${v}, minor ${o.minor_model_number}`], ["nv_count", "Network variables"], ["alias_count", "Aliases"],
+        ["address_count", "Address table entries"], ["two_domains", "Two domains", yes], ["read_write_protect", "Read/write protected", yes],
+        ["run_when_unconfigured", "Runs when unconfigured", yes], ["explicit_messages", "Processes explicit messages", yes],
+        ["receive_transaction_count", "Receive transactions"], ["message_tag_count", "Message tags"],
+        ["snvt_pointer", "Self-identification data", v => v === 0 ? "none" : v === 0xFFFF ? "host based" : "at 0x" + v.toString(16)]]),
+      h("h3", {}, "Buffers"), table([["Buffer", b => b.name], ["Size (bytes)", b => b.size, "num"], ["Count", b => b.count, "num"],
+        ["Priority count", b => b.priority_count ?? "", "num"]], bufs),
+      h("h3", {}, "Configuration data"), r.config ? kv(r.config, [["channel_id", "Channel ID"], ["location", "Location"],
+        ["nm_authentication", "Network management authentication", v => v ? "required: this tool cannot change the device" : "not required"],
+        ["comm_clock", "Communications clock"], ["input_clock", "Input clock"], ["comm_type", "Communications type"],
+        ["preamble_length", "Preamble length"], ["packet_cycle", "Packet cycle"], ["beta2_control", "Beta 2 control"],
+        ["transmit_interpacket", "Transmit interpacket"], ["receive_interpacket", "Receive interpacket"], ["node_priority", "Node priority"],
+        ["channel_priorities", "Channel priorities"], ["non_group_timer_ms", "Non-group receive timer (ms)"],
+        ["transceiver_parameters", "Transceiver parameters", mono]]) : h("div", {class: "note"}, r.config_error));
+  } else if (name === "domains") {
+    const r = await run("domains", {}, "Reading the domain table"); if (!r) return;
+    out.replaceChildren(h("h3", {}, "Domain table"), table([["Index", d => d.index, "num"],
+      ["Domain ID", d => !d.used ? h("span", {class: "muted"}, "not used") : d.length === 0 ? "zero length" : mono(d.domain_id)],
+      ["Subnet", d => d.subnet ?? "", "num"], ["Node", d => d.node ?? "", "num"],
+      ["Authentication key", d => d.default_key ? "default (all FF)" : keyCell(d.key)]], r));
+  } else if (name === "addresses") {
+    const r = await run("addresses", {}, "Reading the address table"); if (!r) return;
+    const used = r.filter(a => a.type !== "unused");
+    out.replaceChildren(h("h3", {}, "Address table"), used.length ? table([["Index", a => a.index, "num"], ["Type", a => a.type, "nowrap"],
+      ["Destination", a => a.type === "group" ? `group ${a.group}, member ${a.member} of ${a.size || "open"}` : a.type === "subnet/node" ? `subnet ${a.subnet}, node ${a.node}`
+        : a.type === "broadcast" ? (a.subnet ? `subnet ${a.subnet}` : "whole domain") : "", "nowrap"],
+      ["Domain", a => a.domain ?? "", "num"], ["Retries", a => a.retries ?? "", "num"], ["Repeat (ms)", a => a.repeat_timer_ms ?? "", "num"],
+      ["Transmit (ms)", a => a.tx_timer_ms ?? "", "num"], ["Receive (ms)", a => a.receive_timer_ms ?? "", "num"], ["Raw", a => mono(a.raw)]], used) : "",
+      h("p", {class: "hint"}, r.length ? `${used.length} of ${r.length} entries are in use.` : "This device has no address table."));
+  } else if (name === "nvs") {
+    const r = await run("nvs", {}, "Reading network variables"); if (!r) return;
+    renderNvs(r);
+  } else if (name === "aliases") {
+    const r = await run("aliases", {}, "Reading the alias table"); if (!r) return;
+    out.replaceChildren(h("h3", {}, "Alias table"), r.length ? table([["Index", a => a.index, "num"], ["Primary NV", a => a.used ? a.primary : h("span", {class: "muted"}, "not used"), "num"],
+      ["Direction", a => a.used ? a.direction : ""], ["Selector", a => a.used ? mono("0x" + a.selector.toString(16).padStart(4, "0")) : ""],
+      ["Service", a => a.used ? a.service : ""], ["Address index", a => a.used ? a.addr_index ?? "" : "", "num"], ["Raw", a => mono(a.raw)]], r)
+      : h("p", {class: "hint"}, "This device has no alias table."));
+  } else if (name === "memory") {
+    const mode = h("select", {}, [["ro", "Read-only structure"], ["cfg", "Configuration structure"], ["stat", "Statistics"], ["abs", "Absolute address"]].map(o => h("option", {value: o[0]}, o[1])));
+    const off = h("input", {type: "text", value: "0", class: "mono"}), cnt = h("input", {type: "number", value: 32, min: 1, max: 1024});
+    if (!await ask({title: "Read memory", confirm: "Read", body: [h("label", {class: "field"}, "Address space", mode),
+      h("label", {class: "field"}, "Offset (decimal or 0x…)", off), h("label", {class: "field"}, "Bytes", cnt)]})) return;
+    const r = await run("memory", {mode: mode.value, offset: off.value, count: cnt.value}, "Reading memory"); if (!r) return;
+    const b = r.data.match(/../g) || [], lines = [];
+    for (let i = 0; i < b.length; i += 16) { const row = b.slice(i, i + 16);
+      lines.push((r.offset + i).toString(16).padStart(4, "0") + "  " + row.join(" ").padEnd(48) + " " + row.map(x => { const c = parseInt(x, 16); return c >= 32 && c < 127 ? String.fromCharCode(c) : "."; }).join("")); }
+    out.replaceChildren(h("h3", {}, `Memory, ${mode.selectedOptions[0].textContent.toLowerCase()}`), h("div", {class: "dump"}, lines.join("\n")));
+  } else {
+    const what = {wink: ["Wink", "Sending wink"], clear: ["Clear status", "Clearing status"], online: ["Set online", "Setting online"],
+      offline: ["Set offline", "Setting offline"], reset: ["Reset device", "Resetting"]}[name];
+    if (name === "offline" && !await ask({title: `Set ${dev.name} offline?`, danger: true, confirm: "Set offline",
+      body: h("p", {}, "The application stops running until the device is set online or reset. Lights and sensors on it stop responding.")})) return;
+    if (name === "reset" && !await ask({title: `Reset ${dev.name}?`, danger: true, confirm: "Reset device",
+      body: h("p", {}, "The device restarts its application. Outputs may switch to their power-up state.")})) return;
+    if (name === "clear" && !await ask({title: "Clear status?", confirm: "Clear status", body: h("p", {}, "Error counters, the last reset cause and the error log are set to zero.")})) return;
+    const r = await run(name === "wink" || name === "clear" ? name : "mode", {mode: name}, what[1]); if (!r) return;
+    out.replaceChildren(h("div", {class: "note"}, name === "reset" && !r.acknowledged ? "Reset sent. The device did not acknowledge, which is normal if it restarted at once."
+      : `${what[0]}: acknowledged by the device.`));
+  }
+}
+function keyCell(key) {
+  const s = h("span", {}, h("button", {class: "btn small", onclick: () => s.replaceChildren(mono(key))}, "Show key"));
+  return s;
+}
+function renderNvs(r) {
+  const out = $("#out"), types = (meta && meta.snvt_types) || [];
+  const fmtDecoded = d => d == null ? "" : typeof d !== "object" ? String(d)
+    : "state" in d && "value" in d ? `${d.value}%, ${d.state === 1 ? "on" : d.state === 0 ? "off" : "null"}`
+    : Object.entries(d).map(([k, v]) => `${k} ${v}`).join(", ");
+  const valueCell = (hex, dec) => [mono(hex ?? ""), dec != null ? h("span", {class: "muted"}, "  " + fmtDecoded(dec)) : null];
+  const body = h("tbody");
+  for (const nv of r.nvs) {
+    const val = h("td", {class: nv.value_error ? "" : "nowrap"}, nv.value_error ? h("span", {class: "muted"}, nv.value_error) : valueCell(nv.value, nv.decoded));
+    const poll = h("button", {class: "btn small", onclick: async () => { poll.disabled = true;
+      try { const p = (await api("/api/tool", {tool: "poll", node: dev.key, args: {index: nv.index, snvt: nv.snvt}})).result;
+        nv.value = p.value; val.className = "nowrap"; val.replaceChildren(...valueCell(p.value, p.decoded).filter(Boolean)); }
+      catch (e) { toast(e.message); } poll.disabled = false; }}, "Poll");
+    const write = nv.direction === "in" ? h("button", {class: "btn small", onclick: async () => {
+      const typed = types.includes(nv.snvt), inp = h("input", {type: "text", class: "mono", value: typed ? "" : nv.value || ""});
+      const how = nv.snvt === "SNVT_switch" ? "Level and state, for example 75:on, or just on / off." : typed ? `A ${nv.snvt} value in engineering units.` : `Hex bytes${nv.length ? `, ${nv.length} of them` : ""}.`;
+      if (!await ask({title: `Write NV ${nv.index}${nv.name ? " (" + nv.name + ")" : ""}`, confirm: "Write", body: [h("label", {class: "field"}, "New value", inp), h("p", {class: "hint"}, how)]})) return;
+      try { const p = (await api("/api/tool", {tool: "update", node: dev.key, args: {index: nv.index, value: inp.value, snvt: typed ? nv.snvt : null}})).result;
+        nv.value = p.value; val.className = "nowrap"; val.replaceChildren(...valueCell(p.value, p.decoded).filter(Boolean)); toast(`Wrote ${p.written}, device now reports ${p.value}`); }
+      catch (e) { toast(e.message); } }}, "Write") : null;
+    const add = h("button", {class: "btn small", onclick: () => addEntity(nv)}, "Add entity");
+    body.append(h("tr", {}, h("td", {class: "num"}, nv.index), h("td", {}, nv.name || ""), h("td", {class: "nowrap"}, nv.snvt ? [nv.snvt, h("span", {class: "muted"}, ` (${nv.snvt_index})`)] : nv.snvt_index === 0 ? h("span", {class: "muted"}, "not a SNVT") : ""),
+      h("td", {}, h("span", {class: "tag " + nv.direction}, nv.direction === "in" ? "input" : "output")),
+      h("td", {class: "nowrap"}, mono("0x" + nv.selector.toString(16).padStart(4, "0")), nv.bound ? " bound" : ""), h("td", {class: "nowrap"}, nv.service + (nv.auth ? ", authenticated" : "") + (nv.priority ? ", priority" : "") + (nv.addr_index != null ? `, address entry ${nv.addr_index}` : "")), val, h("td", {class: "ctl"}, [poll, write, add].filter(Boolean).flatMap(b => [b, " "]))));
+  }
+  out.replaceChildren(h("h3", {}, `Network variables (${r.nvs.length})`),
+    r.self_doc ? h("p", {class: "hint"}, "Self-documentation: ", mono(r.self_doc)) : null,
+    ...r.notes.map(n => h("div", {class: "note"}, n)),
+    h("div", {class: "scroll"}, h("table", {}, h("thead", {}, h("tr", {}, ["Index", "Name", "Type", "Direction", "Selector", "Service", "Value", ""].map((c, i) => h("th", {class: i === 0 ? "num" : ""}, c)))), body)));
+}
+async function addEntity(nv) {
+  if (!draft) await loadConfig();
+  const types = meta.snvt_types, sw = nv.snvt === "SNVT_switch";
+  const name = h("input", {type: "text", value: nv.name || `NV ${nv.index}`});
+  const type = h("select", {}, meta.entity_types.map(t => h("option", {value: t, selected: t === (nv.direction === "in" ? (sw ? "light" : "number") : (sw ? "binary_sensor" : "sensor"))}, t)));
+  if (!await ask({title: `Add NV ${nv.index} as an entity`, confirm: "Add to settings", body: [h("label", {class: "field"}, "Name", name),
+    h("label", {class: "field"}, "Home Assistant type", type),
+    h("p", {class: "hint"}, nv.direction === "in" ? "This is an input: the bridge writes it. Add the matching output as “NV out” in Settings to read the real state back."
+      : "This is an output: the bridge reads it. Lights, switches and numbers also need the input the bridge writes.")]})) return;
+  let node = draft.nodes.find(n => String(n.neuron_id).replace(/[^0-9a-f]/gi, "").toLowerCase() === dev.key);
+  if (!node) { node = {id: "node_" + dev.key.slice(-4), name: dev.name === dev.key ? `Node ${dev.key.slice(-4)}` : dev.name, neuron_id: dev.key, entities: []}; draft.nodes.push(node); }
+  node.entities = node.entities || [];
+  const e = {id: slug(`${node.id}_${name.value}`), name: name.value, type: type.value, snvt_type: types.includes(nv.snvt) ? nv.snvt : "raw", polling_interval: 30};
+  e[nv.direction === "in" ? "nv_in" : "nv_out"] = nv.index;
+  node.entities.push(e);
+  setDirty(true); show("settings"); toast("Added. Review it, then save.");
+}
+
+/* ======================================================================= monitor */
+let paused = false;
+function buildMonitor() {
+  const filter = h("input", {type: "text", placeholder: "Filter, e.g. 1/12 or NV update", id: "pf", style: "width:250px", "aria-label": "Filter packets"});
+  const own = h("input", {type: "checkbox", id: "hideown"});
+  filter.oninput = own.onchange = () => { for (const tr of $("#packets").children) tr.hidden = !matches(tr._p); };
+  $("#view-monitor").replaceChildren(
+    h("div", {class: "bar"}, h("h2", {}, "Packets on the bus"), h("span", {class: "grow"}), filter,
+      h("label", {class: "check"}, own, "Hide this bridge's own traffic"),
+      h("button", {class: "btn", onclick: ev => { paused = !paused; ev.target.textContent = paused ? "Resume" : "Pause"; }}, "Pause"),
+      h("button", {class: "btn", onclick: () => $("#packets").replaceChildren()}, "Clear")),
+    h("div", {class: "feed", id: "feed"}, h("table", {}, h("thead", {}, h("tr", {}, ["Time", "", "From", "To", "Service", "Content", "Bytes"].map(c => h("th", {}, c)))), h("tbody", {id: "packets"}))),
+    h("div", {class: "bar", style: "margin-top:18px"}, h("h2", {}, "Log")),
+    h("div", {class: "logs", id: "logs"}));
+}
+function matches(p) {
+  const f = $("#pf").value.trim().toLowerCase();
+  if ($("#hideown").checked && S && (p.dir === "tx" || p.dst === `${S.link.subnet}/${S.link.node}`)) return false;
+  return !f || `${p.src} ${p.dst} ${p.type} ${p.info} ${p.hex}`.toLowerCase().includes(f);
+}
+function addPacket(p, force) {
+  if (paused && !force) return;
+  const feed = $("#feed"), body = $("#packets");
+  const stick = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 30;
+  const tr = h("tr", {class: (p.dir === "tx" ? "tx" : "") + (p.crc_ok ? "" : " bad")}, h("td", {class: "mono"}, clock(p.t)), h("td", {}, p.dir === "tx" ? "sent" : ""),
+    h("td", {class: "mono"}, p.src), h("td", {class: "mono"}, p.dst), h("td", {}, p.type + (p.tid !== undefined ? ` #${p.tid}` : "")),
+    h("td", {class: "wrap"}, p.info || ""), h("td", {class: "mono muted"}, p.hex));
+  tr._p = p; tr.hidden = !matches(p);
+  body.append(tr);
+  while (body.children.length > 400) body.firstChild.remove();
+  if (stick) feed.scrollTop = feed.scrollHeight;
+}
+function addLog(l) {
+  const box = $("#logs"), stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.append(h("div", {class: l.level}, `${clock(l.t).slice(0, 8)} ${l.level.padEnd(7)} ${l.msg}`));
+  while (box.children.length > 400) box.firstChild.remove();
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/* ======================================================================= settings */
+function setDirty(v) { dirty = v; $("#dirty-dot").hidden = !v; }
+async function loadConfig() {
+  const r = await api("/api/config");
+  meta = r; draft = r.config;
+  for (const k of ["mqtt", "lonworks", "web"]) draft[k] = draft[k] || {};
+  draft.nodes = draft.nodes || [];
+  setDirty(false);
+}
+function field(obj, key, label, opts = {}) {
+  const inp = h("input", {type: opts.type || "text", value: obj[key] ?? "", placeholder: opts.placeholder, min: opts.min, max: opts.max, step: opts.step,
+    class: opts.mono ? "mono" : null, list: opts.list, autocomplete: "off"});
+  inp.oninput = () => { obj[key] = inp.value; setDirty(true); };
+  return h("label", {class: "field"}, label, inp);
+}
+function check(obj, key, label, dflt = false) {
+  const inp = h("input", {type: "checkbox", checked: obj[key] ?? dflt});
+  inp.onchange = () => { obj[key] = inp.checked; setDirty(true); };
+  return h("label", {class: "check"}, inp, label);
+}
+function choose(obj, key, options, label) {
+  const sel = h("select", {"aria-label": label}, options.map(o => h("option", {value: o, selected: (obj[key] ?? options[0]) === o}, o)));
+  sel.onchange = () => { obj[key] = sel.value; setDirty(true); };
+  return sel;
+}
+function cell(obj, key, label, opts = {}) {
+  const inp = h("input", {type: opts.type || "text", value: obj[key] ?? "", "aria-label": label, min: opts.min, class: opts.mono ? "mono" : null});
+  inp.oninput = () => { obj[key] = inp.value; setDirty(true); };
+  return inp;
+}
+async function renderSettings() {
+  const root = $("#view-settings");
+  if (!draft) { root.replaceChildren(h("p", {class: "muted"}, "Loading…")); try { await loadConfig(); } catch (e) { root.replaceChildren(h("div", {class: "note fault"}, e.message)); return; } }
+  const lw = draft.lonworks, mq = draft.mqtt, web = draft.web;
+  const ports = h("datalist", {id: "ports"}, meta.ports.flatMap(p => [h("option", {value: p.path}), p.by_id ? h("option", {value: p.by_id}) : null]));
+  const nodes = h("div");
+  draft.nodes.forEach((n, ni) => {
+    n.entities = n.entities || [];
+    const body = h("tbody");
+    n.entities.forEach((e, ei) => {
+      if (e.snvt_type === undefined) e.snvt_type = "raw";
+      if (e.type === undefined) e.type = "sensor";
+      const more = h("tr", {class: "more", hidden: true}, h("td", {colspan: 9}, h("div", {class: "more-grid"},
+        field(e, "device_class", "Device class"), field(e, "unit", "Unit"), field(e, "min", "Minimum", {type: "number"}), field(e, "max", "Maximum", {type: "number"}),
+        field(e, "step", "Step", {type: "number"}), check(e, "dimmable", "Dimmable light", true), check(e, "invert", "Invert on/off"), check(e, "confirm", "Ask before sending"))));
+      body.append(h("tr", {}, h("td", {}, cell(e, "name", "Entity name")), h("td", {}, cell(e, "id", "Entity ID", {mono: true})),
+        h("td", {}, choose(e, "type", meta.entity_types, "Type")), h("td", {}, choose(e, "snvt_type", meta.snvt_types.includes(e.snvt_type || "raw") ? meta.snvt_types : [...meta.snvt_types, e.snvt_type], "SNVT type")),
+        h("td", {class: "n"}, cell(e, "nv_in", "NV in", {type: "number", min: 0})), h("td", {class: "n"}, cell(e, "nv_out", "NV out", {type: "number", min: 0})),
+        h("td", {class: "n"}, cell(e, "polling_interval", "Poll every (s)", {type: "number", min: 0})),
+        h("td", {}, h("button", {class: "btn small", type: "button", onclick: () => { more.hidden = !more.hidden; }}, "More")),
+        h("td", {}, h("button", {class: "btn small danger", type: "button", onclick: () => { n.entities.splice(ei, 1); setDirty(true); renderSettings(); }}, "Remove"))), more);
+    });
+    nodes.append(h("div", {class: "cfg-node"},
+      h("div", {class: "grid"}, field(n, "name", "Node name"), field(n, "id", "ID"), field(n, "neuron_id", "Neuron ID", {mono: true, placeholder: "021234567890"}),
+        h("button", {class: "btn danger", type: "button", onclick: async () => { if (n.entities.length && !await ask({title: `Remove ${n.name || "this node"}?`, danger: true, confirm: "Remove node",
+          body: h("p", {}, `Its ${n.entities.length} entities are removed from the configuration too.`)})) return; draft.nodes.splice(ni, 1); setDirty(true); renderSettings(); }}, "Remove node")),
+      h("div", {class: "scroll cfg-ents"}, h("table", {}, h("thead", {}, h("tr", {}, ["Name", "ID", "Type", "SNVT type", "NV in", "NV out", "Poll every (s)", "", ""].map(c => h("th", {}, c)))), body)),
+      h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: () => { n.entities.push({id: "", name: "", type: "sensor", snvt_type: "SNVT_switch", polling_interval: 30}); setDirty(true); renderSettings(); }}, "Add entity")));
+  });
+  const msg = h("span", {class: "msg", role: "alert"});
+  root.replaceChildren(h("form", {class: "form", onsubmit: async ev => { ev.preventDefault(); msg.textContent = "";
+      try { await api("/api/config", {config: draft}); draft = null; await renderSettings(); toast("Saved. The bridge restarted with the new configuration."); refresh(); }
+      catch (e) { msg.textContent = `Not saved: ${e.message}`; } }},
+    h("div", {class: "group"}, h("h2", {}, "LON channel"),
+      h("p", {}, "The serial port of the U61-type interface and the address this bridge uses on the bus. The address must not belong to any other device."),
+      h("div", {class: "grid"}, field(lw, "serial_port", "Serial port", {list: "ports", mono: true}), ports,
+        field(lw, "domain_id", "Domain ID (hex)", {mono: true, placeholder: "0, 1, 3 or 6 bytes"}),
+        field(lw, "source_subnet", "Bridge subnet (1 to 255)", {type: "number", min: 1, max: 255}), field(lw, "source_node", "Bridge node (1 to 127)", {type: "number", min: 1, max: 127}),
+        field(lw, "timeout", "Reply timeout (s)", {type: "number", min: 0.1, step: 0.1, placeholder: "1.5"}), field(lw, "retries", "Attempts", {type: "number", min: 1, max: 10, placeholder: "3"}),
+        field(lw, "baudrate", "Baud rate", {type: "number", placeholder: "460800"}))),
+    h("div", {class: "group"}, h("h2", {}, "MQTT"), h("p", {}, "Leave the broker empty to run without MQTT, for example while commissioning."),
+      h("div", {class: "grid"}, field(mq, "broker", "Broker host"), field(mq, "port", "Port", {type: "number", placeholder: "1883"}), field(mq, "username", "User name"),
+        field(mq, "password", "Password", {type: "password"}), field(mq, "base_topic", "Base topic", {mono: true}), field(mq, "discovery_prefix", "Home Assistant discovery prefix", {mono: true}))),
+    h("div", {class: "group"}, h("h2", {}, "Web interface"),
+      h("p", {}, "Changes here apply the next time lonweb starts. Set a password before listening on anything other than 127.0.0.1."),
+      h("div", {class: "grid"}, field(web, "host", "Listen address", {mono: true, placeholder: "127.0.0.1"}), field(web, "port", "Port", {type: "number", placeholder: "8099"}), field(web, "username", "User name", {placeholder: "admin"}),
+        field(web, "password", "Password", {type: "password"}))),
+    h("div", {class: "group"}, h("h2", {}, "Nodes and entities"),
+      h("p", {}, "“NV in” is the input network variable the bridge writes. “NV out” is the output it reads. Use Node tools to look up the indexes."),
+      nodes,
+      h("button", {class: "btn", type: "button", style: "margin-top:14px", onclick: () => { draft.nodes.push({id: "", name: "", neuron_id: "", entities: []}); setDirty(true); renderSettings(); }}, "Add node")),
+    h("div", {class: "savebar"}, h("button", {class: "btn primary"}, "Save and restart bridge"),
+      h("button", {class: "btn", type: "button", onclick: () => { draft = null; renderSettings(); }}, "Discard changes"),
+      h("span", {class: "hint mono"}, meta.path), msg)));
+}
+
+/* ======================================================================= live data */
+async function refresh() {
+  try {
+    S = await api("/api/state");
+    skew = Date.now() / 1000 - S.time;
+    renderPath(); renderPanel();
+    if (view === "tools") renderDevList();
+  } catch (e) {
+    $("#banner").replaceChildren(h("div", {class: "banner"}, "lonweb is not answering. Check that it is still running."));
+  }
+}
+function connectEvents() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("state", ev => { const e = JSON.parse(ev.data); paintEntity(e); });
+  es.addEventListener("packet", ev => addPacket(JSON.parse(ev.data)));
+  es.addEventListener("log", ev => addLog(JSON.parse(ev.data)));
+  es.addEventListener("pin", ev => { const p = JSON.parse(ev.data); toast(`Service pin pressed on ${p.neuron_id}`); refresh(); });
+  es.addEventListener("progress", ev => { const p = JSON.parse(ev.data), el = $("#progress");
+    if (el) el.textContent = p.tool === "find" ? `${p.done} devices so far…` : p.total ? `${p.done} of ${p.total}…` : `${p.done}…`;
+    if (p.tool === "find" && $("#find")) $("#find").textContent = `Searching… ${p.done} found`; });
+}
+(async function start() {
+  buildTools(); buildMonitor();
+  await refresh();
+  try { const hist = await api("/api/history"); hist.packets.forEach(p => addPacket(p, true)); hist.logs.forEach(addLog); } catch (e) { /* history is optional */ }
+  connectEvents();
+  setInterval(refresh, 4000);
+  api("/api/config").then(r => { meta = meta || r; }).catch(() => {});
+})();
+window.addEventListener("beforeunload", ev => { if (dirty) ev.preventDefault(); });
+</script>
+</body>
+</html>
