@@ -36,9 +36,19 @@ lonworks:
 #   nv_out           NV index the bridge READS (feedback / output). If omitted, nv_in is read.
 #   polling_interval seconds between reads (0 = read once at start-up and after writes)
 #   Optional: dimmable (light), field: value|state (SNVT_switch sensors), invert (binary),
-#             unit, device_class, icon, min/max/step (number)
+#             unit, device_class, icon, min/max/step (number),
+#             confirm: true (the web interface asks before sending a command)
+#
+# Always put Neuron IDs and domain IDs in quotes: YAML reads 021234567890 as a number.
 #
 # NV indexes can be listed with:  python3 lon2mqtt.py -c config.yaml scan <node>
+
+# Web interface (lonweb.py). Optional.
+web:
+  host: "127.0.0.1"               # use "0.0.0.0" to reach it from the network...
+  port: 8099
+  # username: "admin"             # ...and then set a password
+  # password: "change_me"
 
 nodes:
   - id: "lighting_module_1"
@@ -108,3 +118,14 @@ nodes:
         device_class: light
         nv_out: 7
         polling_interval: 30
+
+      # Listen-only: decode the module's own updates on the bus instead of polling.
+      # Find the selector in the bus monitor ("NV update, selector 0x....").
+      - id: "garden_motion"
+        name: "Garden motion"
+        type: binary_sensor
+        snvt_type: SNVT_switch
+        device_class: motion
+        listen_selector: 0x0123       # quote-free hex is fine; stored as "0x0123"
+        # listen_source: 1/12         # default: this node; "any" accepts every sender
+        off_delay: 90                 # back to OFF 90 s after the last "on" event
