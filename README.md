@@ -8,6 +8,8 @@ It talks directly to an EnOcean/Echelon USB network interface running **MIP/U61 
 daemon, no LON network interface and no LNS/OpenLNS license are needed. It runs in an
 unprivileged LXC container or on a Raspberry Pi, as long as `/dev/ttyUSB0` is available.
 
+Thanks to SylvainPastor for pointing out critical changes that made this possible (https://github.com/SylvainPastor/lon-stack-dx)
+
 > Status: early. The bridge (read, write, polling, listening) and the binding tool have been
 > used with a U10 FT rev B on a residential FT-10 network of dimmer, I/O and sensor modules.
 > Everything is also tested against a simulator built from the open-source LON stack's message
